@@ -1,76 +1,60 @@
-# Base Infrastructure Stack
+# Base Stack
 
-The foundation of HomeLab Stack. Must be deployed **before any other stack**.
+实现整个项目的基础设施层，所有其他 Stack 依赖此 Stack 运行。
 
-## What's Included
+## 服务清单
 
-| Service | Version | URL | Purpose |
-|---------|---------|-----|---------|
-| Traefik | 3.1 | `traefik.<DOMAIN>` | Reverse proxy + TLS termination |
-| Portainer CE | 2.21 | `portainer.<DOMAIN>` | Docker management UI |
-| Watchtower | latest-stable | — | Automatic container updates |
+| 服务 | 镜像 | 用途 |
+|------|------|------|
+| Traefik | `traefik:v3.1.6` | 反向代理 + 自动 HTTPS |
+| Portainer CE | `portainer/portainer-ce:2.21.3` | Docker 管理 UI |
+| Watchtower | `containrrr/watchtower:1.7.1` | 容器自动更新 |
+| Socket Proxy | `tecnativa/docker-socket-proxy:0.2.0` | 安全隔离 Docker socket |
 
-## Architecture
+## 网络
 
-```
-Internet
-    │
-    ▼
-[Traefik :443]
-    │  TLS termination (Let's Encrypt)
-    │  ForwardAuth → Authentik (optional)
-    │
-    ├──► portainer.<DOMAIN>  → Portainer
-    ├──► traefik.<DOMAIN>    → Traefik Dashboard
-    └──► *..<DOMAIN>         → Other stacks via 'proxy' network
-
-[proxy] ← shared Docker network — all stacks attach here
+本项目使用名为 `proxy` 的外部网络。所有其他 Stack 通过此网络接入 Traefik。启动前必须先创建该网络：
+```bash
+docker network create proxy
 ```
 
-## Prerequisites
+## 环境变量配置
 
-- Docker >= 24.0 with Compose v2 plugin
-- Ports 80 and 443 open on your firewall
-- A domain pointing to your server's IP (A record)
-- `./scripts/setup-env.sh` completed (creates `.env` and `acme.json`)
+复制 `.env.example` 为 `.env` 并填入必要的信息：
+```bash
+DOMAIN=example.com
+ACME_EMAIL=admin@example.com
+TRAEFIK_AUTH=         # htpasswd 生成的用户名:密码
+TZ=Asia/Shanghai
+```
 
-## Quick Start
+如何生成 `TRAEFIK_AUTH` 的值：
+```bash
+echo $(htpasswd -nb your_username your_password) | sed -e s/\\$/\\$\\$/g
+```
+
+## 启动
 
 ```bash
-# From repo root — recommended (runs check-deps + setup-env first)
-./install.sh
-
-# Or manually:
-cd stacks/base
-ln -sf ../../.env .env       # share root .env
 docker compose up -d
 ```
 
-## Configuration
+## 证书与 DNS 配置说明
 
-### Environment Variables (`.env`)
+- Traefik 配置为使用 Let's Encrypt 自动获取 HTTPS 证书。默认使用 HTTP Challenge 挑战方式验证（占用 80 端口自动重定向到 443）。
+- 请确保域名的 DNS A 记录已解析到您的服务器 IP：
+  - `*.<DOMAIN>` （泛解析） 或
+  - `traefik.<DOMAIN>` 和 `portainer.<DOMAIN>`
+- 证书会持久化存储在 `../../data/traefik/acme/acme.json` 中。
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DOMAIN` | ✅ | Base domain, e.g. `home.example.com` |
-| `ACME_EMAIL` | ✅ | Email for Let's Encrypt notifications |
-| `TRAEFIK_DASHBOARD_USER` | ✅ | Dashboard login username |
-| `TRAEFIK_DASHBOARD_PASSWORD_HASH` | ✅ | Bcrypt hash — see below |
-| `TZ` | ✅ | Timezone, e.g. `Asia/Shanghai` |
-| `CN_MODE` | — | `true` to use CN Docker mirrors |
+## CN 适配（镜像源）
 
-### Generate Dashboard Password Hash
-
-```bash
-# Install htpasswd (Debian/Ubuntu)
-sudo apt-get install -y apache2-utils
-
-# Generate hash (replace 'yourpassword')
-htpasswd -nbB admin 'yourpassword' | sed -e 's/\$$/\$\$\$/g'
-
-# Paste output into .env as TRAEFIK_DASHBOARD_PASSWORD_HASH
+由于基础层（Base Stack）全部使用标准的 Docker Hub 镜像，无 `gcr.io` 或 `ghcr.io`，建议您在国内使用时，配置系统的 `daemon.json` 中的 `registry-mirrors` 进行加速：
+```json
+{
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io"
+  ]
+}
 ```
-
-### TLS Certificates
-
-Traefik uses Let's Encrypt HTTP-01 challenge by default. Certificates are stored in
+对于 Watchtower、Portainer 等，也可选择替换为 `docker.m.daocloud.io/` 前缀的镜像源。
